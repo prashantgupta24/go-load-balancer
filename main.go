@@ -9,27 +9,30 @@ type Request struct {
 	result chan int
 }
 
-func loadBalancer(work chan Request) chan int {
-	// go func() {
-	// 	r.result <- r.fn()
-	// }()
-	// return r.result
+type LoadBalancer struct {
+}
+
+func (l *LoadBalancer) start(RequestChan chan Request) {
 	for {
 		select {
-		case w := <-work:
+		case r := <-RequestChan:
 			{
-				w.result <- w.fn()
+				go worker(r)
 			}
 		}
 	}
 }
 
+func worker(request Request) {
+	request.result <- request.fn()
+}
 func main() {
-	fmt.Println("hello")
+	fmt.Println("Starting")
 
-	WorkChan := make(chan Request)
-	go loadBalancer(WorkChan)
-	//ResultChan := make(chan int)
+	RequestChan := make(chan Request)
+
+	loadBalancer := LoadBalancer{}
+	go loadBalancer.start(RequestChan)
 
 	r1 := Request{
 		fn: func() int {
@@ -38,7 +41,7 @@ func main() {
 		result: make(chan int),
 	}
 
-	WorkChan <- r1
+	RequestChan <- r1
 	fmt.Println(<-r1.result)
 
 }
