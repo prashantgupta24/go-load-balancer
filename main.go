@@ -6,87 +6,66 @@ import (
 	"time"
 )
 
-type Request struct {
+type request struct {
 	fn     interface{}
 	result interface{}
 }
 
-type Pool struct {
-	pool []*Worker
-}
-
-type LoadBalancer struct {
-	pool        Pool
+type loadBalancer struct {
+	pool        []*worker
 	numWorkers  int
-	RequestChan chan *Request
-	done        chan *Worker
+	RequestChan chan *request
 }
 
-type Worker struct {
-	WorkerChan chan *Request
-	id         int
+type worker struct {
+	RequestChan chan *request
+	id          int
 }
 
-func (l *LoadBalancer) Init() {
-	for i := 0; i < l.numWorkers; i++ {
-		WorkerChan := make(chan *Request)
-		worker := &Worker{
-			WorkerChan: WorkerChan,
-			id:         i,
+func (l *loadBalancer) start() {
+	WorkerChan := make(chan *worker, l.numWorkers)
+	for i := 1; i <= l.numWorkers; i++ {
+		worker := &worker{
+			RequestChan: make(chan *request),
+			id:          i,
 		}
-		l.pool.pool = append(l.pool.pool, worker)
-		go worker.start(l.done)
+		l.pool = append(l.pool, worker)
+		WorkerChan <- worker
+		go worker.start(WorkerChan)
 	}
-}
 
-func (l *LoadBalancer) start() {
-	i := 0
-	for {
+	for request := range l.RequestChan {
 		select {
-		case request := <-l.RequestChan:
-			fmt.Println("selecting worker ", i)
-			worker := l.pool.pool[i]
-			i++
-			worker.WorkerChan <- request
-		case w := <-l.done:
-			fmt.Println("worker done!", w.id)
-			i--
+		case worker := <-WorkerChan:
+			fmt.Println("selecting worker ", worker.id)
+			worker.RequestChan <- request
 		}
 	}
-	// for request := range l.RequestChan {
-	// 	fmt.Println("selecting worker ", l.i)
-	// 	worker := l.pool[l.i%10]
-	// 	l.i++
-	// 	worker.WorkerChan <- request
-	// 	<-worker.done
-	// }
+	fmt.Println("Shutting down load balancer")
+
+	for _, worker := range l.pool {
+		close(worker.RequestChan)
+	}
 }
 
-// for request := range l.RequestChan {
-// 	fmt.Println("selecting worker ", i)
-// 	worker := l.pool[i%10]
-// 	i++
-// 	worker.WorkerChan <- request
-// }
-
-func (w *Worker) start(done chan (*Worker)) {
-	for request := range w.WorkerChan {
+func (w *worker) start(WorkerChan chan *worker) {
+	for request := range w.RequestChan {
 		switch request.result.(type) {
 		case chan int:
 			ResChan := request.result.(chan int)
 			fn := request.fn.(func() int)
 			ResChan <- fn()
-			done <- w
 		case chan string:
 			ResChan := request.result.(chan string)
 			fn := request.fn.(func() string)
 			ResChan <- fn()
-			done <- w
 		}
+		WorkerChan <- w
 	}
+	fmt.Println("Closing worker ", w.id)
 }
 
-func WaitForTask(wg *sync.WaitGroup, request *Request) {
+func waitForTask(wg *sync.WaitGroup, request *request) {
 	switch request.result.(type) {
 	case chan int:
 		ResChan := request.result.(chan int)
@@ -101,34 +80,39 @@ func WaitForTask(wg *sync.WaitGroup, request *Request) {
 func main() {
 	fmt.Println("Starting...")
 
-	RequestChan := make(chan *Request)
+	RequestChan := make(chan *request)
 	var wg sync.WaitGroup
-	loadBalancer := LoadBalancer{
-		pool:        Pool{},
+
+	loadBalancer := loadBalancer{
+		pool:        []*worker{},
 		numWorkers:  10,
 		RequestChan: RequestChan,
-		done:        make(chan *Worker, 10),
 	}
 
-	loadBalancer.Init()
 	go loadBalancer.start()
 
-	for i := 0; i < 15; i++ {
+	defer func() {
+		close(loadBalancer.RequestChan)
+		time.Sleep(time.Second * 4)
+	}()
+
+	for i := 1; i <= 10; i++ {
 		//time.Sleep(time.Second)
-		req := Request{
+		j := i
+		req := request{
 			fn: func() int {
-				time.Sleep(time.Second * 5)
-				return 2 * 4
+				time.Sleep(time.Second * 2)
+				return j
 			},
 			result: make(chan int),
 		}
 
 		RequestChan <- &req
 		wg.Add(1)
-		go WaitForTask(&wg, &req)
+		go waitForTask(&wg, &req)
 	}
 
-	req2 := Request{
+	req2 := request{
 		fn: func() string {
 			return "hello"
 		},
@@ -137,7 +121,8 @@ func main() {
 
 	RequestChan <- &req2
 	wg.Add(1)
-	go WaitForTask(&wg, &req2)
+	go waitForTask(&wg, &req2)
 
 	wg.Wait()
+
 }
